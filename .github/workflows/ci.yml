@@ -1,0 +1,67 @@
+name: Build and Test
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Node ${{ matrix.node-version }}
+    runs-on: ubuntu-latest
+    services:
+      cassandra:
+        image: cassandra:4.1
+        ports:
+          - 9042:9042
+        env:
+          CASSANDRA_DC: datacenter1
+          CASSANDRA_CLUSTER_NAME: ci-cluster
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [18, 20, 22]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build --silent
+
+      - name: Wait for Cassandra
+        shell: bash
+        run: |
+          for i in {1..60}; do
+            if (echo > /dev/tcp/127.0.0.1/9042) >/dev/null 2>&1; then
+              echo "Cassandra is reachable"
+              exit 0
+            fi
+            echo "Waiting for Cassandra on 9042... ($i/60)"
+            sleep 2
+          done
+          echo "Cassandra did not become ready in time"
+          exit 1
+
+      - name: Lint
+        shell: bash
+        run: |
+          if [ -f eslint.config.js ] || [ -f .eslintrc ] || [ -f .eslintrc.js ] || [ -f .eslintrc.cjs ] || [ -f .eslintrc.json ] || [ -f .eslintrc.yaml ] || [ -f .eslintrc.yml ]; then
+            npm run lint --silent
+          else
+            echo "No ESLint config found; skipping lint."
+          fi
+
+      - name: Unit tests
+        run: npm run mocha --silent
