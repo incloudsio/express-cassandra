@@ -446,8 +446,19 @@ Apollo.prototype = {
 
       const managementTasks = [];
       if (this._keyspace && this._options.manageESIndex) {
-        this.assertESIndexAsync = Promise.promisify(this._assert_es_index);
-        managementTasks.push(this.assertESIndexAsync());
+        if (esClientKind === 'opensearch') {
+          // Modern Elassandra/OpenSearch hangs on keyspace-level index creates.
+          // Model sync creates table-specific indices after the CQL tables exist.
+          try {
+            this.create_es_client();
+          } catch (err1) {
+            callback(err1);
+            return;
+          }
+        } else {
+          this.assertESIndexAsync = Promise.promisify(this._assert_es_index);
+          managementTasks.push(this.assertESIndexAsync());
+        }
       }
       if (this._keyspace && this._options.manageGraphs) {
         this.assertGremlinGraphAsync = Promise.promisify(this._assert_gremlin_graph);

@@ -49,16 +49,25 @@ const ElassandraBuilder = function f(client) {
 };
 
 ElassandraBuilder.prototype = {
-  create_index(keyspaceName, indexName, callback) {
-    debug('creating elassandra index: %s', indexName);
+  // `tableName` is optional for backward-compatibility with callers that create
+  // keyspace-level indices. When provided, it is written as `index.table` in the
+  // settings so Elassandra can bind a typeless OpenSearch mapping (default type
+  // `_doc`) to the actual CQL table. Without it, Elassandra's IndexMetadata.table()
+  // falls back to `_doc`, and CQL writes to the real table never reach ES.
+  create_index(keyspaceName, indexName, tableName, callback) {
+    if (typeof tableName === 'function') {
+      callback = tableName;
+      tableName = null;
+    }
+    debug('creating elassandra index: %s (keyspace=%s, table=%s)', indexName, keyspaceName, tableName || '<none>');
     const client = this._client;
+    const settings = { keyspace: keyspaceName };
+    if (tableName) {
+      settings.table = tableName;
+    }
     invoke(client, client.indices, client.indices.create, {
       index: indexName,
-      body: {
-        settings: {
-          keyspace: keyspaceName,
-        },
-      },
+      body: { settings },
     }, (err) => {
       if (err) {
         callback(err);
@@ -81,14 +90,18 @@ ElassandraBuilder.prototype = {
     });
   },
 
-  assert_index(keyspaceName, indexName, callback) {
+  assert_index(keyspaceName, indexName, tableName, callback) {
+    if (typeof tableName === 'function') {
+      callback = tableName;
+      tableName = null;
+    }
     this.check_index_exist(indexName, (err, exist) => {
       if (err) {
         callback(err);
         return;
       }
       if (!exist) {
-        this.create_index(keyspaceName, indexName, callback);
+        this.create_index(keyspaceName, indexName, tableName, callback);
         return;
       }
       callback();

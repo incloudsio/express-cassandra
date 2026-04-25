@@ -231,7 +231,10 @@ BaseModel._sync_es_index = function f(callback) {
     const indexName = `${keyspaceName}_${mappingName}`;
 
     const elassandraBuilder = new ElassandraBuilder(properties.esclient);
-    elassandraBuilder.assert_index(keyspaceName, indexName, (err) => {
+    // Pass the CQL table name so the builder writes `index.table` into the
+    // index settings; Elassandra uses that to bind a typeless OpenSearch
+    // mapping (type `_doc`) to the correct CQL table.
+    elassandraBuilder.assert_index(keyspaceName, indexName, mappingName, (err) => {
       if (err) {
         callback(err);
         return;
