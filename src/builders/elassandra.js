@@ -44,6 +44,29 @@ const invoke = (client, thisArg, fn, params, callback) => {
   }
 };
 
+// Elassandra table scoping still relies on typed mappings (`/<index>/_mapping/<table>`).
+// The opensearch-js helper only exposes typeless putMapping(), so use transport
+// directly when talking to Elassandra.
+const invokeTransport = (client, params, callback) => {
+  if (!client || !client.transport || typeof client.transport.request !== 'function') {
+    callback(new Error('OpenSearch transport client unavailable'));
+    return;
+  }
+  try {
+    const p = client.transport.request(params);
+    if (p && typeof p.then === 'function') {
+      p.then(
+        (res) => callback(null, unwrap(res)),
+        (err) => callback(err),
+      );
+      return;
+    }
+    callback(null, unwrap(p));
+  } catch (err) {
+    callback(err);
+  }
+};
+
 const ElassandraBuilder = function f(client) {
   this._client = client;
 };
@@ -127,12 +150,36 @@ ElassandraBuilder.prototype = {
       index: indexName,
       body: mappingBody,
     };
-    if (!isPromiseClient(client)) {
-      // Legacy ES/Elassandra convention: one "type" per table.
-      params.type = mappingName;
+    if (isPromiseClient(client)) {
+      const typedPath = `/${encodeURIComponent(indexName)}/_mapping/${encodeURIComponent(mappingName)}`;
+      invokeTransport(client, {
+        method: 'PUT',
+        path: typedPath,
+        querystring: { include_type_name: 'true' },
+        body: mappingBody,
+      }, (typedErr) => {
+        if (!typedErr) {
+          callback();
+          return;
+        }
+        debug(
+          'typed mapping update failed for %s/%s, falling back to typeless putMapping: %s',
+          indexName,
+          mappingName,
+          typedErr && typedErr.message ? typedErr.message : typedErr,
+        );
+        invoke(client, client.indices, client.indices.putMapping, params, (err) => {
+          if (err) {
+            callback(err);
+            return;
+          }
+          callback();
+        });
+      });
+      return;
     }
-    // For the opensearch client we issue a typeless mapping update, which is
-    // the supported shape on OpenSearch 1.3+ (and required on 2.x).
+    // Legacy ES/Elassandra convention: one "type" per table.
+    params.type = mappingName;
     invoke(client, client.indices, client.indices.putMapping, params, (err) => {
       if (err) {
         callback(err);
