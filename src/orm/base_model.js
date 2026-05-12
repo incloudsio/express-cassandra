@@ -224,22 +224,95 @@ BaseModel._sync_model_definition = function f(callback) {
 
 BaseModel._sync_es_index = function f(callback) {
   const properties = this._properties;
+  const schema = properties.schema || {};
 
-  if (properties.esclient && properties.schema.es_index_mapping) {
+  const getFallbackField = () => {
+    const partitionKey = Array.isArray(schema.key) && schema.key.length > 0 ? schema.key[0] : '';
+    const partitionFields = Array.isArray(partitionKey)
+      ? partitionKey.map((item) => String(item))
+      : (partitionKey ? [String(partitionKey)] : []);
+    const schemaFields = Object.keys(schema.fields || {});
+    for (let i = 0; i < schemaFields.length; i += 1) {
+      const fieldName = schemaFields[i];
+      const fieldDef = schema.fields[fieldName];
+      if (fieldDef && fieldDef.virtual) continue;
+      if (!partitionFields.includes(fieldName)) return fieldName;
+    }
+    return partitionFields[0] || 'id';
+  };
+
+  const ensureSecondaryIndex = (next) => {
+    if (!properties.esclient || !schema.es_index_mapping) {
+      next();
+      return;
+    }
+
+    const tableName = properties.table_name;
+    const secondaryIndexName = `elastic_${tableName}_idx`;
+    const indexClasses = [
+      'org.elassandra.index.ExtendedElasticSecondaryIndex',
+      'org.elassandra.index.ElasticSecondaryIndex',
+    ];
+    const fallbackField = getFallbackField();
+    const runCreate = (indexClass, targetField, done) => {
+      const query = util.format(
+        'CREATE CUSTOM INDEX IF NOT EXISTS "%s" ON "%s" ("%s") USING \'%s\';',
+        secondaryIndexName,
+        tableName,
+        targetField,
+        indexClass,
+      );
+      this._driver.execute_definition_query(query, done);
+    };
+    const attempts = [];
+    for (let i = 0; i < indexClasses.length; i += 1) {
+      attempts.push({ indexClass: indexClasses[i], targetField: '_id' });
+      if (fallbackField !== '_id') {
+        attempts.push({ indexClass: indexClasses[i], targetField: fallbackField });
+      }
+    }
+    let cursor = 0;
+    let lastErr = null;
+    const runNext = () => {
+      if (cursor >= attempts.length) {
+        next(lastErr);
+        return;
+      }
+      const attempt = attempts[cursor];
+      cursor += 1;
+      runCreate(attempt.indexClass, attempt.targetField, (err) => {
+        if (!err) {
+          next();
+          return;
+        }
+        lastErr = err;
+        runNext();
+      });
+    };
+    runNext();
+  };
+
+  if (properties.esclient && schema.es_index_mapping) {
     const keyspaceName = properties.keyspace;
     const mappingName = properties.table_name;
     const indexName = `${keyspaceName}_${mappingName}`;
 
-    const elassandraBuilder = new ElassandraBuilder(properties.esclient);
-    // Pass the CQL table name so the builder writes `index.table` into the
-    // index settings; Elassandra uses that to bind a typeless OpenSearch
-    // mapping (type `_doc`) to the correct CQL table.
-    elassandraBuilder.assert_index(keyspaceName, indexName, mappingName, (err) => {
-      if (err) {
-        callback(err);
+    ensureSecondaryIndex((secondaryErr) => {
+      if (secondaryErr) {
+        callback(secondaryErr);
         return;
       }
-      elassandraBuilder.put_mapping(indexName, mappingName, properties.schema.es_index_mapping, callback);
+      const elassandraBuilder = new ElassandraBuilder(properties.esclient);
+      // Pass the CQL table name so the builder writes `index.table` into the
+      // index settings; Elassandra uses that to bind a typeless OpenSearch
+      // mapping (type `_doc`) to the correct CQL table.
+      elassandraBuilder.assert_index(keyspaceName, indexName, mappingName, (err) => {
+        if (err) {
+          callback(err);
+          return;
+        }
+        elassandraBuilder.put_mapping(indexName, mappingName, schema.es_index_mapping, callback);
+      });
     });
     return;
   }

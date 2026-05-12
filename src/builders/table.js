@@ -256,6 +256,16 @@ TableBuilder.prototype = {
             const using = indexOptions.class_name;
             delete indexOptions.class_name;
 
+            // Elassandra internal row-to-index bridge. We manage this
+            // separately when es_index_mapping exists and do not want alter
+            // migration logic to treat it as user-defined drift.
+            if (
+              using === 'org.elassandra.index.ElasticSecondaryIndex'
+              || using === 'org.elassandra.index.ExtendedElasticSecondaryIndex'
+            ) {
+              continue;
+            }
+
             if (!dbSchema.custom_indexes) dbSchema.custom_indexes = [];
             const customIndexObject = {
               on: target,
